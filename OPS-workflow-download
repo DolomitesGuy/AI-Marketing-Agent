@@ -1,0 +1,951 @@
+{
+  "name": "OPS - Advertising Operations Audit",
+  "nodes": [
+    {
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "mode"
+            },
+            {
+              "name": "client_id"
+            },
+            {
+              "name": "campaign_id"
+            },
+            {
+              "name": "test_mode",
+              "type": "boolean"
+            },
+            {
+              "name": "fixture_mode",
+              "type": "boolean"
+            },
+            {
+              "name": "fixture_scenario"
+            },
+            {
+              "name": "target_cpa",
+              "type": "number"
+            },
+            {
+              "name": "source"
+            }
+          ]
+        }
+      },
+      "id": "97071c29-5065-4c89-8a72-6a6b59416189",
+      "name": "When Executed by Another Workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -2464,
+        2128
+      ],
+      "notes": "Mode в случае теста ставьте в ручную pin data: health ИЛИ rsya"
+    },
+    {
+      "parameters": {
+        "jsCode": "// One shared input contract for OPS audits. Fail closed.\nconst items = $input.all();\nif (items.length !== 1) {\n  throw new Error('OPS audit expects exactly one campaign per call. Iterate campaigns in the caller.');\n}\nconst x=items[0]?.json??{};\nconst s=v=>String(v??'').trim();\nconst uuid=v=>/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);\nconst mode=s(x.mode).toLowerCase();\nif(!['health','rsya'].includes(mode)) throw new Error('mode must be health or rsya');\nconst client_id=s(x.client_id), campaign_id=s(x.campaign_id);\nif(!uuid(client_id)||!uuid(campaign_id)) throw new Error('Valid client_id and campaign_id UUIDs required');\nif(typeof x.test_mode!=='boolean') throw new Error('test_mode must be an explicit boolean');\nconst fixture_mode=x.fixture_mode===true;\nif(fixture_mode&&!x.test_mode) throw new Error('Fixture requires test_mode=true');\nif(!fixture_mode&&x.test_mode) throw new Error('Non-fixture OPS audit requires test_mode=false');\nconst scenario=s(x.fixture_scenario)||'mixed';\nif (fixture_mode) {\n  const allowed=mode==='health'?['mixed','draft','healthy','no_data']:['mixed','low_data','no_data'];\n  if(!allowed.includes(scenario)) throw new Error(`Unsupported fixture_scenario for ${mode}: ${scenario}`);\n}\nconst target=x.target_cpa === '' || x.target_cpa == null ? null : Number(x.target_cpa);\nif(target!==null&&(!Number.isFinite(target)||target<=0)) throw new Error('target_cpa must be a positive number');\nreturn [{json:{\n mode, client_id,campaign_id,test_mode:x.test_mode,fixture_mode,\n fixture_scenario:scenario,target_cpa_override:target,\n operation_type:mode==='health'?'campaign_health_audit':'rsya_placement_audit',\n requested_at:new Date().toISOString()\n}}];"
+      },
+      "id": "a42ec926-edd3-4301-b4c3-c22516f637ab",
+      "name": "Validate OPS Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2224,
+        2128
+      ],
+      "notes": "Проверяет корректность параметров, прежде чем система обратится к базе или API"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "with i as (\n select $1::uuid as client_id, $2::uuid as campaign_id, $3::boolean as test_mode\n)\nselect\n (c.id is not null) as campaign_found,\n c.id as campaign_id,\n c.client_id,\n c.external_campaign_id::text as external_campaign_id,\n c.goal_id::text as goal_id,\n c.target_cpa::numeric as campaign_target_cpa,\n c.name as campaign_name,\n ar.snapshot as latest_snapshot,\n ar.created_at as analysis_created_at,\n ar.overall_status as latest_analysis_status\nfrom i\nleft join public.campaigns c\n on c.id=i.campaign_id and c.client_id=i.client_id and c.is_active=true\nleft join lateral (\n select snapshot,created_at,overall_status\n from public.analysis_runs\n where client_id=i.client_id and campaign_id=i.campaign_id and test_mode=i.test_mode\n order by created_at desc limit 1\n) ar on true;",
+        "options": {
+          "queryReplacement": "={{ [ $('Validate OPS Request').first().json.client_id, $('Validate OPS Request').first().json.campaign_id, $('Validate OPS Request').first().json.test_mode ] }}"
+        }
+      },
+      "id": "aa8273a6-f9bf-480b-8d08-29675dc59bab",
+      "name": "Load OPS Context",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -1984,
+        2128
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pTIihC6jfUeKzWCu",
+          "name": "supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $('Validate OPS Request').first().json.mode }}",
+                    "rightValue": "health",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "e77611ab-f67c-401c-8c9c-33344dd67339"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "health"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $('Validate OPS Request').first().json.mode }}",
+                    "rightValue": "rsya",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "3b25f42d-4179-4739-a305-dd6527855b6c"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "rsya"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        -1744,
+        2128
+      ],
+      "id": "0a581208-4994-4642-843e-f2f80257c2b9",
+      "name": "Choose Audit Mode",
+      "notes": "AI выбирает режим работы"
+    },
+    {
+      "parameters": {
+        "jsCode": "const r=$('Validate OPS Request').first().json;\nconst d=$input.first()?.json??{};\nif(d.campaign_found!==true)throw new Error('No active campaign for this client');\nconst external=String(d.external_campaign_id??'').trim();\nif(!/^\\d+$/.test(external))throw new Error('Missing trusted external Yandex campaign ID');\nreturn[{json:{...r,external_campaign_id:external,campaign_name:d.campaign_name??null,campaign_target_cpa:d.campaign_target_cpa??null,latest_snapshot:d.latest_snapshot??null,analysis_created_at:d.analysis_created_at??null,latest_analysis_status:d.latest_analysis_status??null}}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1504,
+        1840
+      ],
+      "id": "f2ce3a4e-7438-4a13-be9f-d1bd2e30f02b",
+      "name": "Build Health Context",
+      "notes": "Аналог Build Health Context, только немного сложнее"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "6a5057f4-3fbc-4245-aba2-a5cb7351d815",
+              "leftValue": "={{ $json.fixture_mode }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "7d10e1ee-6aab-457b-b997-141e4fc4b9f3",
+      "name": "Health Fixture?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -1264,
+        1840
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const ctx=$('Build Health Context').first().json;\nconst campaignId=Number(ctx.external_campaign_id);\nconst base={Id:campaignId,Name:ctx.campaign_name??'QA campaign',Type:'UNIFIED_CAMPAIGN',Status:'ACCEPTED',State:'ON',StatusPayment:'ALLOWED',StatusClarification:null};\nconst groups=[{Id:1001,CampaignId:campaignId,Name:'Группа 1',Status:'ACCEPTED',ServingStatus:'ELIGIBLE'}];\nconst ads=[{Id:2001,CampaignId:campaignId,AdGroupId:1001,Status:'ACCEPTED',State:'ON',StatusClarification:null}];\nconst now=new Date().toISOString();\nconst fixtures={\n mixed:{campaign:base,groups:[...groups,{Id:1002,CampaignId:campaignId,Name:'Группа 2',Status:'REJECTED',ServingStatus:'ELIGIBLE'}],ads:[...ads,{Id:2002,CampaignId:campaignId,AdGroupId:1002,Status:'REJECTED',State:'OFF',StatusClarification:'Rejected in fixture'}],metrics:{impressions:5000,clicks:140,cost:5000,conversions:4,cpa:1250},target_cpa:300},\n draft:{campaign:{...base,Status:'DRAFT',State:'OFF'},groups:[],ads:[],metrics:null,target_cpa:300},\n healthy:{campaign:base,groups,ads,metrics:{impressions:5000,clicks:150,cost:3000,conversions:12,cpa:250},target_cpa:300},\n no_data:{campaign:base,groups,ads,metrics:null,target_cpa:300}\n};\nreturn[{json:{source:'synthetic_fixture',...fixtures[ctx.fixture_scenario],analysis_created_at:now}}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1040,
+        1680
+      ],
+      "id": "0d6bba35-b0b1-4d7b-8b2a-0af67edc3b67",
+      "name": "Synthetic Health Data",
+      "notes": "синтетическая data\nhealthy - Работающая кампания с исправными объявлениями\ndraft - Черновик, который ещё не готов к показам\nmixed - Работающая кампания с отклонёнными группой и объявлением\nno_data - Кампания с нормальной структурой, но без статистики"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.direct.yandex.com/json/v501/campaigns",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ ({ method:'get', params:{ SelectionCriteria:{Ids: [Number($('Build Health Context').first().json.external_campaign_id)] }, FieldNames:[\"Id\",\"Name\",\"Type\",\"Status\",\"State\",\"StatusPayment\",\"StatusClarification\"] , Page:{Limit:10000} } }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -1040,
+        1904
+      ],
+      "id": "379eea42-64f4-47e7-b97b-91c581cbfebd",
+      "name": "Get Campaign Health",
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "J7VHBbhT7NLePNE7",
+          "name": "Bearer Auth account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.direct.yandex.com/json/v501/adgroups",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ ({ method:'get', params:{ SelectionCriteria:{CampaignIds: [Number($('Build Health Context').first().json.external_campaign_id)] }, FieldNames:[\"Id\",\"CampaignId\",\"Name\",\"Status\",\"ServingStatus\"] , Page:{Limit:10000} } }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -800,
+        1904
+      ],
+      "id": "3450bdf4-7bd8-469c-905d-c59e4f80efbd",
+      "name": "Get AdGroups Health",
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "J7VHBbhT7NLePNE7",
+          "name": "Bearer Auth account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.direct.yandex.com/json/v501/ads",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ ({ method:'get', params:{ SelectionCriteria:{CampaignIds: [Number($('Build Health Context').first().json.external_campaign_id)] }, FieldNames:[\"Id\",\"CampaignId\",\"AdGroupId\",\"Status\",\"State\",\"StatusClarification\"] , Page:{Limit:10000} } }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -560,
+        1904
+      ],
+      "id": "63e1f264-0b23-4db5-ae9d-4e260fb32ae3",
+      "name": "Get Ads Health",
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "J7VHBbhT7NLePNE7",
+          "name": "Bearer Auth account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Campaign Health Audit V1: independent, read-only, deterministic checks.\nconst ctx=$('Build Health Context').first().json;\nconst fixture=ctx.fixture_mode===true;\nconst fixtureData=fixture?$input.first()?.json:null;\nconst apiNames=['Get Campaign Health','Get AdGroups Health','Get Ads Health'];\nconst get=(name)=>{try{return $(name).first().json??{}}catch{return {}}};\nconst api=fixture?{}:{campaign:get(apiNames[0]),groups:get(apiNames[1]),ads:$input.first()?.json??{}};\nconst source=fixture?'synthetic_fixture':'yandex_direct_live';\nconst problems=[];const checks=[];const quality=[];\nconst add=(code,severity,title,detail={},action='review')=>{\n  problems.push({code,severity,title,evidence:detail,recommended_check:action,requires_human_review:true});\n};\nconst check=(name,status,reason)=>checks.push({name,status,reason});\nconst fmt=v=>String(v??'').toUpperCase();\nconst num=v=>{if(v===null||v===undefined||v===''||v==='--')return null;const x=Number(v);return Number.isFinite(x)&&x>=0?x:null};\nconst positive=v=>{const x=num(v);return x!==null&&x>0?x:null};\nlet campaign=null,groups=null,ads=null;\nif(fixture){campaign=fixtureData.campaign;groups=fixtureData.groups;ads=fixtureData.ads;}\nelse{\n const configs=[['campaign',api.campaign,'Campaigns'],['groups',api.groups,'AdGroups'],['ads',api.ads,'Ads']];\n for(const [label,res,key] of configs){\n  if(res.error||res.Error){quality.push(`${label}_api_error`);continue;}\n  if(!Array.isArray(res.result?.[key])){quality.push(`${label}_response_unavailable`);continue;}\n  if(res.result?.LimitedBy!==undefined&&res.result?.LimitedBy!==null){quality.push(`${label}_pagination_incomplete`);continue;}\n  if(label==='campaign')campaign=res.result[key].find(c=>String(c.Id)===ctx.external_campaign_id)??null;\n  if(label==='groups')groups=res.result[key].filter(g=>String(g.CampaignId)===ctx.external_campaign_id);\n  if(label==='ads')ads=res.result[key].filter(a=>String(a.CampaignId)===ctx.external_campaign_id);\n }\n}\nconst date=new Date().toISOString();\nconst base={contract_version:1,operation_type:'campaign_health_audit',client_id:ctx.client_id,campaign_id:ctx.campaign_id,external_campaign_id:ctx.external_campaign_id,campaign_name:ctx.campaign_name,checked_at:date,source,test_mode:ctx.test_mode,fixture_mode:ctx.fixture_mode,fixture_scenario:fixture?ctx.fixture_scenario:null,analysis_created_at:fixture?fixtureData.analysis_created_at:ctx.analysis_created_at,safety:{read_only:true,can_propose_changes:false,can_execute:false,requires_human_review:true}};\nif(!campaign){quality.push('campaign_unavailable');return[{json:{...base,status:'unavailable',health:'unknown',findings:[],checks,summary:{critical:0,warning:0,info:0,issues:0},data_quality:{status:'incomplete',warnings:quality},recommendations:['Check Direct API campaign access and response']}}];}\nconst cStatus=fmt(campaign.Status),cState=fmt(campaign.State),payment=fmt(campaign.StatusPayment);\nconst draft=['DRAFT','MODERATION','PREACCEPTED'].includes(cStatus);\nconst active=cState==='ON'&&cStatus==='ACCEPTED';\nconst config={id:String(campaign.Id),name:campaign.Name??ctx.campaign_name,status:cStatus,state:cState,payment_status:payment,status_clarification:campaign.StatusClarification??null};\nif(draft){add('CAMPAIGN_NOT_READY','info','Кампания ещё не готова к показам',{status:cStatus,state:cState},'Check review/launch readiness');check('campaign_lifecycle','attention','Draft/moderation: absence of traffic is expected');}\nelse if(cStatus==='REJECTED'){add('CAMPAIGN_REJECTED','critical','Модерация кампании отклонена',{status:cStatus,clarification:config.status_clarification},'Review rejection reasons');check('campaign_lifecycle','problem','Campaign rejected');}\nelse if(['SUSPENDED','OFF','ENDED','ARCHIVED'].includes(cState)){add('CAMPAIGN_NOT_SERVING','warning','Кампания не находится в состоянии показа',{state:cState},'Check whether suspension is intended');check('campaign_lifecycle','attention',`State ${cState}`);}\nelse if(active){check('campaign_lifecycle','ok','Accepted and ON');}\nelse{check('campaign_lifecycle','unknown','Unrecognized campaign moderation/serving state');quality.push('campaign_state_unrecognized');}\nif(payment==='DISALLOWED'&&!draft){add('PAYMENT_NOT_ALLOWED','warning','Ограничены показы по статусу оплаты',{status_payment:payment},'Check campaign/account billing');check('payment','attention','Payment disallowed');}\nelse if(!payment){check('payment','unknown','Payment status not returned');}\nelse check('payment','ok',`Payment ${payment}`);\nif(groups===null){check('ad_groups','unknown','Group inventory incomplete');quality.push('groups_not_verified');}\nelse{\n const rejected=groups.filter(g=>fmt(g.Status)==='REJECTED').slice(0,20);\n if(rejected.length)add('AD_GROUPS_REJECTED','warning','Некоторые группы объявлений отклонены',{count:rejected.length,group_ids:rejected.map(g=>String(g.Id))},'Review group moderation');\n if(groups.length===0&&!draft)add('NO_AD_GROUPS','warning','У кампании не обнаружены группы объявлений',{},'Check campaign configuration');\n check('ad_groups',rejected.length?'attention':'ok',`Retrieved ${groups.length} groups`);\n}\nif(ads===null){check('ad_moderation','unknown','Ad inventory incomplete');quality.push('ads_not_verified');}\nelse{\n const rejected=ads.filter(a=>fmt(a.Status)==='REJECTED').slice(0,20);\n if(rejected.length)add('ADS_REJECTED','warning','Есть отклонённые объявления',{count:rejected.length,ad_ids:rejected.map(a=>String(a.Id)),reasons:rejected.map(a=>a.StatusClarification).filter(Boolean).slice(0,3)},'Review ad moderation reasons');\n if(!draft&&ads.length===0)add('NO_ADS','warning','В кампании нет объявлений',{},'Create/restore ads');\n else if(active&&!ads.some(a=>fmt(a.Status)==='ACCEPTED'&&fmt(a.State)==='ON'))add('NO_ACTIVE_ADS','warning','Не обнаружено активных принятых объявлений',{},'Check ad states and moderation');\n check('ad_moderation',rejected.length?'attention':'ok',`Retrieved ${ads.length} ads`);\n}\n// Use only latest matching real analysis; fixture metrics are self-contained.\nconst snap=ctx.latest_snapshot??{};\nconst rawMetrics=fixture?fixtureData.metrics:snap.metrics??null;\nconst m=rawMetrics&&typeof rawMetrics==='object'?rawMetrics:{};\nconst clicks=num(m.clicks),impressions=num(m.impressions),conversions=num(m.conversions),cost=num(m.cost);\nconst cpa=conversions!==null\n ? (conversions>0&&cost!==null?cost/conversions:null)\n : positive(m.cpa);\nconst overrideTarget=positive(ctx.target_cpa_override);\nconst campaignTarget=positive(ctx.campaign_target_cpa);\nconst businessTarget=positive(snap.business_context?.target_cpa);\nconst strategyTarget=positive(snap.strategy_context?.target_cpa);\nconst fixtureTarget=fixture?positive(fixtureData.target_cpa):null;\nconst target=overrideTarget ??\n (fixture?fixtureTarget:(campaignTarget ?? businessTarget ?? strategyTarget)) ??\n null;\nconst targetSource=overrideTarget!==null\n ? 'caller_override'\n : fixture\n   ? (fixtureTarget!==null?'synthetic_fixture':'unavailable')\n   : campaignTarget!==null\n     ? 'campaign_business_context'\n     : businessTarget!==null\n       ? 'analysis_business_context'\n       : strategyTarget!==null\n         ? 'strategy_context'\n         : 'unavailable';\nconst stamp=base.analysis_created_at;\nconst ageHours=stamp?(Date.now()-new Date(stamp).getTime())/3600000:null;\nconst fresh=ageHours!==null&&Number.isFinite(ageHours)&&ageHours>=0&&ageHours<=36;\nif(!fixture&&!draft){if(!stamp)quality.push('no_historical_analysis');else if(!fresh)quality.push('analysis_stale_over_36h');}\nif(draft){check('performance','not_applicable','Draft/moderation: no-spend evaluation is not applicable');}\nelse if(!fresh&&!fixture){check('performance','unknown','Latest matching real analysis missing or stale');}\nelse if(clicks===null||impressions===null||cost===null||conversions===null){check('performance','unknown','Required performance metrics unavailable');quality.push('performance_metrics_incomplete');}\nelse{\n if(active&&impressions===0)add('NO_IMPRESSIONS','warning','За период анализа не зарегистрированы показы',{impressions,period:snap.report_period??null},'Check serving and reporting availability');\n if(active&&clicks>=15&&conversions===0&&target!==null&&cost>=target)add('SPEND_WITHOUT_CONVERSIONS','warning','Расходы при нулевых конверсиях',{clicks,cost,conversions,target_cpa:target},'Check conversion tracking and traffic quality');\n if(active&&conversions>=3&&target!==null&&cpa!==null&&cpa>target)add('CPA_ABOVE_TARGET','warning','CPA выше настроенной цели',{cpa:Math.round(cpa*100)/100,target_cpa:target,conversions},'Review cost drivers and campaign segmentation');\n check('performance','ok','Observed metrics evaluated; no causality inferred');\n}\nconst order={critical:0,warning:1,info:2};problems.sort((a,b)=>(order[a.severity]??5)-(order[b.severity]??5));\nconst counts={critical:problems.filter(x=>x.severity==='critical').length,warning:problems.filter(x=>x.severity==='warning').length,info:problems.filter(x=>x.severity==='info').length};\nconst health=counts.critical?'critical':counts.warning?'warning':draft?'not_ready':quality.length?'unknown':'healthy';\nreturn[{json:{...base,status:'completed',health,campaign:config,inventory:{groups_count:groups?.length??null,ads_count:ads?.length??null},performance:{clicks,impressions,cost,conversions,cpa:cpa===null?null:Math.round(cpa*100)/100,target_cpa:target,target_source:targetSource,age_hours:ageHours===null?null:Math.round(ageHours*10)/10},summary:{...counts,issues:problems.length},findings:problems.slice(0,12),checks,data_quality:{status:quality.length?'partial':'complete',warnings:[...new Set(quality)]},recommendations:problems.slice(0,5).map(p=>p.recommended_check)}}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -320,
+        1840
+      ],
+      "id": "70cc960b-62b5-43a2-9a72-25fbb9eaa0b2",
+      "name": "Audit Campaign Health",
+      "notes": "есть ограничение:\nАналитический снимок считается свежим, только если ему не больше 36 часов."
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst request =\n  $(\"Validate OPS Request\").first().json ?? {};\n\nconst row =\n  $input.first()?.json ?? {};\n\n// ==================================================\n// VALIDATE CAMPAIGN IDENTITY\n// ==================================================\n\nif (row.campaign_found !== true) {\n  throw new Error(\n    \"Selected active campaign was not found for this client\"\n  );\n}\n\nfunction str(value) {\n  return String(value ?? \"\").trim();\n}\n\nfunction positiveNumber(value) {\n  if (\n    value === null ||\n    value === undefined ||\n    value === \"\"\n  ) {\n    return null;\n  }\n\n  const n = Number(value);\n\n  return Number.isFinite(n) && n > 0\n    ? n\n    : null;\n}\n\n// This node belongs exclusively to the RSYA branch.\nconst mode = str(request.mode).toLowerCase();\n\nif (mode !== \"rsya\") {\n  throw new Error(\n    `Build Audit Context received unexpected mode: ${mode}`\n  );\n}\n\n// ==================================================\n// BUSINESS CONTEXT\n// ==================================================\n\nconst snap = row.latest_snapshot ?? {};\n\nconst overrideTarget =\n  positiveNumber(request.target_cpa_override);\n\nconst campaignTarget =\n  positiveNumber(row.campaign_target_cpa);\n\nconst businessTarget =\n  positiveNumber(snap.business_context?.target_cpa);\n\nconst strategyTarget =\n  positiveNumber(snap.strategy_context?.target_cpa);\n\nconst target =\n  overrideTarget ??\n  campaignTarget ??\n  businessTarget ??\n  strategyTarget ??\n  null;\n\nconst targetSource =\n  overrideTarget !== null\n    ? \"caller_override\"\n    : campaignTarget !== null\n      ? \"campaign_business_context\"\n      : businessTarget !== null\n        ? \"analysis_business_context\"\n        : strategyTarget !== null\n          ? \"strategy_context\"\n          : \"unavailable\";\n\n// ==================================================\n// YANDEX DIRECT IDENTITY\n// ==================================================\n\nconst external =\n  str(row.external_campaign_id);\n\nif (!/^\\d+$/.test(external)) {\n  throw new Error(\n    \"Campaign external Yandex ID unavailable\"\n  );\n}\n\n// ==================================================\n// METRICA GOAL\n// ==================================================\n\n// A real goal ID is optional for the RSYA inventory\n// and placement statistics request.\n//\n// Never substitute strategy_goal_id here.\n\nconst rawGoal =\n  str(row.goal_id);\n\nconst goalId =\n  /^\\d+$/.test(rawGoal)\n    ? rawGoal\n    : null;\n\n// ==================================================\n// OUTPUT\n// ==================================================\n\nreturn [\n  {\n    json: {\n      ...request,\n\n      mode: \"rsya\",\n\n      external_campaign_id: external,\n\n      goal_id: goalId,\n\n      goal_id_available:\n        goalId !== null,\n\n      goal_metric_scope:\n        goalId !== null\n          ? \"specific_goal\"\n          : \"all_goals_aggregate\",\n\n      campaign_name:\n        row.campaign_name ?? null,\n\n      target_cpa: target,\n\n      target_source: targetSource,\n\n      analysis_created_at:\n        row.analysis_created_at ?? null,\n\n      report_period: \"LAST_30_DAYS\"\n    }\n  }\n];\n"
+      },
+      "id": "acd33b16-bbf6-4c1e-9bf9-b270449b40dc",
+      "name": "Build Audit Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1504,
+        2480
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "6a5057f4-3fbc-4245-aba2-a5cb7351d815",
+              "leftValue": "={{ $json.fixture_mode }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "11db08fe-66b5-4ef5-934b-7c0eb3a1d2d6",
+      "name": "Fixture Mode?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -1264,
+        2480
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const ctx=$('Build Audit Context').first().json;\nconst goal=ctx.goal_id;\nconst cols=['CampaignId','AdNetworkType','Placement','Impressions','Clicks','Cost',`Conversions_${goal}_AUTO`];\nlet rows=[\n [ctx.external_campaign_id,'AD_NETWORK','news-portal.example',8000,80,3000,0],\n [ctx.external_campaign_id,'AD_NETWORK','industry-site.example',4000,60,2400,8],\n [ctx.external_campaign_id,'AD_NETWORK','com.sample.game',5500,50,1800,1],\n [ctx.external_campaign_id,'AD_NETWORK','small-site.example',130,2,100,0],\n [ctx.external_campaign_id,'AD_NETWORK','reference.example',3000,30,600,4]\n];\nif(ctx.fixture_scenario==='no_data')rows=[];\nif(ctx.fixture_scenario==='low_data')rows=rows.slice(3,4);\nconst tsv=[cols.join('\\t'),...rows.map(r=>r.join('\\t'))].join('\\n');\nreturn [{json:{statusCode:200,body:tsv,source:'synthetic_fixture'}}];"
+      },
+      "id": "2dfb6feb-e7a2-4491-b68f-e88c33be65a1",
+      "name": "Synthetic Placement Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1040,
+        2368
+      ],
+      "notes": "Синтетическая data для обучения.\nmixed - Разные площадки: хорошие, дорогие и без конверсий\nlow_data - Очень мало статистики\nno_data - Отсутствие строк отчёта"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.direct.yandex.com/json/v501/reports",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "returnMoneyInMicros",
+              "value": "false"
+            },
+            {
+              "name": "skipReportHeader",
+              "value": "true"
+            },
+            {
+              "name": "skipReportSummary",
+              "value": "true"
+            },
+            {
+              "name": "processingMode",
+              "value": "auto"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ (() => {\n  const ctx = $('Build Audit Context').first().json;\n  const campaignId = String(ctx.external_campaign_id ?? '').trim();\n  if (!/^\\d+$/.test(campaignId)) throw new Error('Missing external campaign ID');\n  const rawGoal = String(ctx.goal_id ?? '').trim();\n  const hasGoal = /^\\d+$/.test(rawGoal);\n  const executionId = String($execution.id ?? 'manual');\n\n  // Unique per execution, stable across offline-report retries.\n  const params = {\n    SelectionCriteria: {\n      Filter: [\n        { Field: 'CampaignId', Operator: 'IN', Values: [campaignId] },\n        { Field: 'AdNetworkType', Operator: 'EQUALS', Values: ['AD_NETWORK'] }\n      ]\n    },\n    FieldNames: [\n      'CampaignId', 'AdNetworkType', 'Placement',\n      'Impressions', 'Clicks', 'Cost',\n      ...(hasGoal ? ['Conversions'] : [])\n    ],\n    ReportName: `RSYA_Places_${campaignId}_${executionId}_v2`,\n    ReportType: 'CUSTOM_REPORT',\n    DateRangeType: 'LAST_30_DAYS',\n    Format: 'TSV',\n    IncludeVAT: 'YES',\n    IncludeDiscount: 'YES',\n    Page: { Limit: 10000 }\n  };\n  if (hasGoal) {\n    params.Goals = [rawGoal];\n    params.AttributionModels = ['AUTO'];\n  }\n  return { params };\n})() }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "responseFormat": "text"
+            }
+          },
+          "timeout": 60000
+        }
+      },
+      "id": "4e403352-47a2-4d64-84ee-6b226092dfda",
+      "name": "Get RSYA Placements Report",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -1040,
+        2624
+      ],
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "J7VHBbhT7NLePNE7",
+          "name": "Bearer Auth account"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "notes": "Отчёт за последние 30 дней с разбивкой по площадкам."
+    },
+    {
+      "parameters": {
+        "jsCode": "// RSYA Placement Audit V2: read-only, deterministic, handles no goal and API errors.\nconst ctx = $('Build Audit Context').first().json;\nconst input = $input.first()?.json ?? {};\nconst fixture = ctx.fixture_mode === true;\nconst goal = /^\\d+$/.test(String(ctx.goal_id ?? '')) ? String(ctx.goal_id) : null;\nconst statusCode = Number(input.statusCode ?? input.response?.statusCode ?? input.error?.statusCode ?? 200);\nconst warnings = [];\nconst metricNumber = v => {\n  if (v === null || v === undefined || v === '' || v === '--' || v === '-') return null;\n  const n = Number(String(v).replace(',', '.'));\n  return Number.isFinite(n) && n >= 0 ? n : null;\n};\nconst round = n => Math.round(n * 100) / 100;\nconst targetCpa = metricNumber(ctx.target_cpa);\nconst base = {\n  contract_version: 2, operation_type: 'rsya_placement_audit',\n  client_id: ctx.client_id, campaign_id: ctx.campaign_id,\n  external_campaign_id: ctx.external_campaign_id,\n  campaign_name: ctx.campaign_name ?? null, goal_id: goal,\n  test_mode: ctx.test_mode, source: fixture ? 'synthetic_fixture' : 'yandex_direct_live',\n  report_period: ctx.report_period, target_cpa: targetCpa,\n  target_source: ctx.target_source ?? 'unavailable',\n  analysis_created_at: ctx.analysis_created_at ?? null,\n  checked_at: new Date().toISOString(),\n  goal_specific_conversions: goal !== null,\n  thresholds: { min_clicks: 15, min_spend_to_target_cpa: 1,\n                high_cpa_to_target_ratio: 2, max_returned: 15 },\n  all_placements_count: 0, candidates_found: 0, candidates: [], placements: [],\n  safety: { ready_for_proposal: false, can_execute: false,\n            human_approval_required: true },\n  data_quality: { status: 'unknown', warnings }\n};\nconst finish = (status, reason, additional = {}) => [{ json: {\n  ...base, status, reason, ...additional,\n  data_quality: { status, warnings }\n} }];\nfunction apiError(res) {\n  let e = res.error ?? res.Error ?? null;\n  const embedded = typeof e === 'string' ? e : (typeof e?.message === 'string' ? e.message : '');\n  if (embedded) {\n    const match = embedded.match(/\\{[\\s\\S]*\\}/);\n    if (match) { try { e = JSON.parse(match[0]); } catch {} }\n  }\n  let body = res.body ?? res.data;\n  if (typeof body === 'string' && body.trim().startsWith('{')) {\n    try { const parsed = JSON.parse(body); e = parsed.error ?? parsed.Error ?? e; } catch {}\n  } else if (body && typeof body === 'object') {\n    e = body.error ?? body.Error ?? e;\n  }\n  if (e && e.error) e = e.error;\n  if (e === null || e === undefined) return null;\n  if (typeof e === 'string') return { message: e.slice(0, 700) };\n  return {\n    code: e.error_code ?? e.code ?? null,\n    message: String(e.error_string ?? e.message ?? 'Reports API error').slice(0, 350),\n    detail: String(e.error_detail ?? e.description ?? '').slice(0, 700)\n  };\n}\nconst error = apiError(input);\nif (!fixture && (statusCode === 201 || statusCode === 202)) {\n  return finish('report_pending', 'Report is still in Yandex queue after retry limit');\n}\nif (error || (!fixture && (statusCode < 200 || statusCode >= 300))) {\n  return finish('report_error', error?.detail || error?.message || `HTTP ${statusCode}`, {\n    http_status: statusCode, api_error: error\n  });\n}\nconst payload = input.body ?? input.data ?? input.report_tsv ?? input;\nconst text = typeof payload === 'string' ? payload :\n  (typeof payload?.data === 'string' ? payload.data : '');\nif (!text.trim()) {\n  return finish('report_unavailable', 'HTTP response has no TSV content');\n}\nconst lines = text.replace(/^\\uFEFF/, '').trim().split(/\\r?\\n/).filter(Boolean);\nconst headers = lines[0].split('\\t').map(x => x.trim());\nconst h = key => headers.findIndex(x => x.toLowerCase() === key.toLowerCase());\nconst idCol = h('CampaignId'), networkCol = h('AdNetworkType');\nconst placeCol = h('Placement'), impressionsCol = h('Impressions');\nconst clicksCol = h('Clicks'), costCol = h('Cost');\nconst mandatory = [idCol, networkCol, placeCol, impressionsCol, clicksCol, costCol];\nif (mandatory.some(x => x < 0)) return finish('report_format_error', `Missing required TSV columns: ${headers.join(', ')}`);\nlet conversionCol = -1;\nif (goal !== null) {\n  for (const name of [`Conversions_${goal}_AUTO`, `Conversions_${goal}`, 'Conversions']) {\n    conversionCol = h(name);\n    if (conversionCol >= 0) break;\n  }\n  if (conversionCol < 0) warnings.push('Goal-specific conversions column missing: CPA signals disabled');\n} else {\n  warnings.push('Metrica goal not configured: CPA and conversion-based exclusions disabled');\n}\nconst stats = new Map();\nlet malformed = 0, wrongCampaign = 0, otherNetwork = 0;\nfor (const line of lines.slice(1)) {\n  const col = line.split('\\t');\n  if (col.length < headers.length) { malformed++; continue; }\n  if (String(col[idCol]).trim() !== String(ctx.external_campaign_id)) { wrongCampaign++; continue; }\n  if (String(col[networkCol]).trim() !== 'AD_NETWORK') { otherNetwork++; continue; }\n  const placement = String(col[placeCol] ?? '').trim();\n  const impressions = metricNumber(col[impressionsCol]);\n  const clicks = metricNumber(col[clicksCol]);\n  const cost = metricNumber(col[costCol]);\n  const conversions = conversionCol < 0 ? null : metricNumber(col[conversionCol]);\n  if (!placement || placement === '--' || [impressions, clicks, cost].some(v => v === null)) {\n    malformed++; continue;\n  }\n  const key = placement.toLowerCase();\n  if (!stats.has(key)) stats.set(key, {\n    placement, impressions: 0, clicks: 0, cost: 0,\n    conversions: conversionCol < 0 ? null : 0\n  });\n  const row = stats.get(key);\n  row.impressions += impressions;\n  row.clicks += clicks;\n  row.cost += cost;\n  if (conversionCol >= 0) {\n    if (conversions === null) row.conversions = null;\n    else if (row.conversions !== null) row.conversions += conversions;\n  }\n}\nif (malformed) warnings.push(`Malformed TSV rows skipped: ${malformed}`);\nif (wrongCampaign) warnings.push(`Foreign campaign rows ignored: ${wrongCampaign}`);\nif (otherNetwork) warnings.push(`Non-network rows ignored: ${otherNetwork}`);\nconst truncated = lines.length - 1 >= 10000;\nif (truncated) warnings.push('Reached Page.Limit=10000: report may be truncated');\nconst all = [...stats.values()];\nif (!all.length) return finish(malformed ? 'partial_data' : 'no_data', 'No usable network placement rows', {\n  all_placements_count: 0, candidates: [], candidates_found: 0\n});\nconst placements = all.sort((a, b) => b.cost - a.cost).slice(0, 15).map(a => ({\n  placement: a.placement, impressions: a.impressions, clicks: a.clicks,\n  cost: round(a.cost), conversions: a.conversions,\n  cpa: a.conversions > 0 ? round(a.cost / a.conversions) : null\n}));\nconst candidates = [];\nconst cpaUsable = goal !== null && conversionCol >= 0 && targetCpa !== null && targetCpa > 0;\nif (cpaUsable) {\n  for (const a of all) {\n    if (a.clicks < base.thresholds.min_clicks || a.conversions === null) continue;\n    const cpa = a.conversions > 0 ? a.cost / a.conversions : null;\n    let signal = null;\n    if (a.conversions === 0 && a.cost >= targetCpa) signal = 'spend_without_conversions';\n    else if (cpa !== null && cpa >= targetCpa * 2) signal = 'cpa_above_target';\n    if (signal) candidates.push({\n      placement: a.placement, signal,\n      metrics: { impressions: a.impressions, clicks: a.clicks,\n        cost: round(a.cost), conversions: a.conversions,\n        cpa: cpa === null ? null : round(cpa) },\n      recommendation_status: 'review_required', proposed_exclusion: null, auto_apply: false\n    });\n  }\n  candidates.sort((a,b) => b.metrics.cost - a.metrics.cost);\n}\nconst partial = malformed > 0 || truncated || wrongCampaign > 0 || otherNetwork > 0;\nreturn [{ json: {\n  ...base, status: partial ? 'partial_data' : 'ready_for_review', reason: null,\n  all_placements_count: all.length, candidates_found: candidates.length,\n  candidates: candidates.slice(0, base.thresholds.max_returned), placements,\n  data_quality: { status: partial ? 'partial_data' : 'complete', warnings },\n  safety: { ...base.safety, notes: [\n    'Placement statistics are not authorization for exclusions.',\n    'Use goal-specific conversion data and human review before optimizing.'\n  ] }\n} }];"
+      },
+      "id": "68f1eb62-d34e-4a28-915f-3b32b41febbd",
+      "name": "Audit RSYA Placements",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -592,
+        2464
+      ],
+      "notes": "Подготавливает информацию для маркетолога.\n1. Проверка ответа API\n2. Сбор статистики по площадкам\n3. Расчёт CPA\n4. Поиск проблемных площадок\n"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "90a6f155-568f-4b8a-aba6-64b80b0c75ab",
+              "leftValue": "=\n{{ [201, 202].includes(Number($json.statusCode)) && $runIndex < 4 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -816,
+        2624
+      ],
+      "id": "d58e2f43-0e44-4c44-b578-e541cdff9a63",
+      "name": "If",
+      "notes": "Отчет формируется в Direct не сразу. Поэтому обращение повторяется "
+    },
+    {
+      "parameters": {
+        "content": "## Advertising Operations Audit, здесь нет AI, все выполняется через  JavaScript. Это Read-Only операции \n\n## Его задача это отвечать на два разных вопроса маркетолога: \n## Health: почему кампания может не работать и какие технические проблемы у неё есть? ( верхняя ветка )\n## RSYA: на каких площадках РСЯ расходуется бюджет и какие из них стоит проверить? ( нижняя ветка )",
+        "height": 336,
+        "width": 576
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -2944,
+        1760
+      ],
+      "id": "0ab6fa3c-aa8f-4ee9-ad4e-a5cbd1a61ad0",
+      "name": "Sticky Note"
+    },
+    {
+      "parameters": {
+        "content": "## проверка кампании и данных.                           статистику берет из последней сохраненной операции Analys Engine",
+        "height": 144,
+        "width": 336
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -2224,
+        1952
+      ],
+      "id": "251dbfad-a8a8-48b2-82aa-4bfb86d8a87b",
+      "name": "Sticky Note1"
+    },
+    {
+      "parameters": {
+        "content": "## Выбирается ветка настоящих данных или тестовых. это ставится в ручную, а не AI",
+        "height": 144,
+        "width": 336
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1504,
+        1680
+      ],
+      "id": "9a18fa87-9971-43a4-8edf-15b1f5dfa577",
+      "name": "Sticky Note2"
+    },
+    {
+      "parameters": {
+        "amount": 3
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        -1264,
+        2624
+      ],
+      "id": "7715b198-a00b-4168-8f3b-8a4a3341cdf7",
+      "name": "Wait 3 Seconds",
+      "webhookId": "26b5a85e-f82f-4489-8330-efe19ab3ecaa"
+    },
+    {
+      "parameters": {
+        "content": "## Статус кампании, оплаты. и пояснения",
+        "height": 128,
+        "width": 192
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1088,
+        2064
+      ],
+      "id": "09a8dd0e-6cbb-4ff4-9d91-93dd72f1f04d",
+      "name": "Sticky Note3"
+    },
+    {
+      "parameters": {
+        "content": "## Проверяет наличие групп  и их статусы",
+        "height": 128,
+        "width": 192
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -848,
+        2064
+      ],
+      "id": "616be6d5-6712-451b-b8af-d8462e595876",
+      "name": "Sticky Note4"
+    },
+    {
+      "parameters": {
+        "content": "## Состояния объявлений и причины отклонений. Позволяет обнаружить отсутствие пригодных к показу объявлений",
+        "height": 304,
+        "width": 192
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -608,
+        2064
+      ],
+      "id": "b46fade6-8bf6-44bc-8e58-cd85517a7904",
+      "name": "Sticky Note5"
+    },
+    {
+      "parameters": {
+        "content": "## Собирает и проводит анализ, оценивает состояние кодом. Если данные Analys Engine устарели (36+ часов) , то код примет данные за устаревшие.",
+        "height": 192,
+        "width": 304
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -528,
+        1632
+      ],
+      "id": "f573ba67-d1fd-44f1-8299-2f78b6524d84",
+      "name": "Sticky Note6"
+    },
+    {
+      "parameters": {
+        "content": "## Чем отличается от Analys Engine?\n## быстро проводит проверку не вызывая LLM и дает чистый и точный результат. Это своего рода технический осмотр рекламной кампании. Он проверяет, всё ли настроено и работает ли реклама с точки зрения доступных статусов",
+        "height": 336,
+        "width": 320
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -144,
+        1632
+      ],
+      "id": "3d8a414c-b78d-44da-8d07-fc5a077834c8",
+      "name": "Sticky Note7"
+    },
+    {
+      "parameters": {
+        "content": "## Ветка оценивает эффективность отдельных рекламных площадок.       Какие из них дают конверсии, а какие расходуют деньги без результата?",
+        "height": 208,
+        "width": 304
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1904,
+        2368
+      ],
+      "id": "95c00999-fec7-4e5e-98b9-0b25ba7baf5c",
+      "name": "Sticky Note8"
+    },
+    {
+      "parameters": {
+        "content": "## Выбирается ветка настоящих данных или тестовых. это ставится в ручную, а не AI",
+        "height": 144,
+        "width": 336
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1504,
+        2320
+      ],
+      "id": "df8af3c0-7c6a-4d6c-a4d2-c7521f3ea5ca",
+      "name": "Sticky Note9"
+    },
+    {
+      "parameters": {
+        "content": "## получает расходы, показы, клики и конверсии по отдельным площадкам РСЯ за 30 дней",
+        "height": 144,
+        "width": 320
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1040,
+        2480
+      ],
+      "id": "be1522f2-3716-4401-a0c3-ea72abf988b6",
+      "name": "Sticky Note10"
+    },
+    {
+      "parameters": {
+        "content": "## Анализирует статистику площадок РСЯ, рассчитывает CPA, находит дорогостоящие размещения без конверсий и формирует список кандидатов для ручной проверки",
+        "height": 224,
+        "width": 320
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -400,
+        2464
+      ],
+      "id": "ce74a596-2274-4e65-afa3-dfa93a5c2c53",
+      "name": "Sticky Note11"
+    },
+    {
+      "parameters": {
+        "content": "## By Github DolomitesGuy\nподробнее читайте в notes внутри settings в нодах",
+        "height": 144
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -2944,
+        2112
+      ],
+      "id": "b7c92469-ca7f-4644-921c-6077064d9898",
+      "name": "Sticky Note12"
+    }
+  ],
+  "pinData": {
+    "When Executed by Another Workflow": [
+      {
+        "json": {
+          "mode": "health",
+          "client_id": "11111111-1111-4111-8111-111111111111",
+          "campaign_id": "22222222-2222-4222-8222-222222222222",
+          "test_mode": true,
+          "fixture_mode": true,
+          "fixture_scenario": "mixed",
+          "target_cpa": 300,
+          "source": "github_demo"
+        }
+      }
+    ],
+    "Load OPS Context": [
+      {
+        "json": {
+          "campaign_found": true,
+          "campaign_id": "22222222-2222-4222-8222-222222222222",
+          "client_id": "11111111-1111-4111-8111-111111111111",
+          "external_campaign_id": "123456789",
+          "goal_id": "987654321",
+          "campaign_target_cpa": 300,
+          "campaign_name": "DEMO — Synthetic OPS Campaign",
+          "latest_snapshot": null,
+          "analysis_created_at": null,
+          "latest_analysis_status": null
+        }
+      }
+    ]
+  },
+  "connections": {
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Validate OPS Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate OPS Request": {
+      "main": [
+        [
+          {
+            "node": "Load OPS Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load OPS Context": {
+      "main": [
+        [
+          {
+            "node": "Choose Audit Mode",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Choose Audit Mode": {
+      "main": [
+        [
+          {
+            "node": "Build Health Context",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Audit Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Health Context": {
+      "main": [
+        [
+          {
+            "node": "Health Fixture?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Health Fixture?": {
+      "main": [
+        [
+          {
+            "node": "Synthetic Health Data",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Get Campaign Health",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Synthetic Health Data": {
+      "main": [
+        [
+          {
+            "node": "Audit Campaign Health",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Campaign Health": {
+      "main": [
+        [
+          {
+            "node": "Get AdGroups Health",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get AdGroups Health": {
+      "main": [
+        [
+          {
+            "node": "Get Ads Health",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Ads Health": {
+      "main": [
+        [
+          {
+            "node": "Audit Campaign Health",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Audit Context": {
+      "main": [
+        [
+          {
+            "node": "Fixture Mode?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fixture Mode?": {
+      "main": [
+        [
+          {
+            "node": "Synthetic Placement Report",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Get RSYA Placements Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Synthetic Placement Report": {
+      "main": [
+        [
+          {
+            "node": "Audit RSYA Placements",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get RSYA Placements Report": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Audit RSYA Placements": {
+      "main": [
+        []
+      ]
+    },
+    "Audit Campaign Health": {
+      "main": [
+        []
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "Wait 3 Seconds",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Audit RSYA Placements",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 3 Seconds": {
+      "main": [
+        [
+          {
+            "node": "Get RSYA Placements Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "132f176f-0e99-44c7-830a-53a09a102b47",
+  "meta": {
+    "instanceId": "9f86c9b34b49cb2ed34c7b5df6c70c98fa36b3ec261d92bcd48b41c72a79e35a"
+  },
+  "nodeGroups": [],
+  "id": "ZZxN9G5eRD6cW59I",
+  "tags": []
+}

@@ -43,7 +43,7 @@
         -2464,
         2128
       ],
-      "notes": "Mode в случае теста ставьте в ручную pin data: health ИЛИ rsya"
+      "notes": "Mode в случае теста ставьте в ручную pin data: health ИЛИ rsya.\nЕсли вы хотите проверить API и live режим, то подключите свои creditionals в соответствующих нодах"
     },
     {
       "parameters": {
@@ -455,7 +455,7 @@
           "conditions": [
             {
               "id": "90a6f155-568f-4b8a-aba6-64b80b0c75ab",
-              "leftValue": "=\n{{ [201, 202].includes(Number($json.statusCode)) && $runIndex < 4 }}",
+              "leftValue": "={{ [201, 202].includes(Number($json.statusCode)) && $runIndex < 4 }}",
               "rightValue": "",
               "operator": {
                 "type": "boolean",
@@ -941,7 +941,7 @@
     "binaryMode": "separate",
     "availableInMCP": false
   },
-  "versionId": "132f176f-0e99-44c7-830a-53a09a102b47",
+  "versionId": "57bd7e53-c758-4a2e-a468-2f879efb4d01",
   "meta": {
     "instanceId": "9f86c9b34b49cb2ed34c7b5df6c70c98fa36b3ec261d92bcd48b41c72a79e35a"
   },
